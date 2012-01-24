@@ -8,16 +8,17 @@
 JSAN.use('MochiKit.DOM');
 JSAN.use('MochiKit.Visual');
 JSAN.use('MochiKit.Async');
-
 JSAN.use('CXGN.Effects');
 JSAN.use('CXGN.Phenome.Tools');
+JSAN.use('jquery.blockUI');
+
 
 
 var Qtl = {
 
     toggleAssociateTaxon: function()
     {	
-	MochiKit.Visual.toggle('associateTaxonForm', 'blind');
+	MochiKit.Visual.toggle('associateTaxonForm', 'appear');
     },
   
 //Make an ajax response that finds all the TAXON with organism ids
@@ -30,7 +31,7 @@ var Qtl = {
 	}
         else{
 	    var type = 'browse';
-	    var d = new MochiKit.Async.doSimpleXMLHttpRequest("organism_browser.pl", {organism: str, type: type});
+	    var d = new MochiKit.Async.doSimpleXMLHttpRequest("/phenome/organism_browser.pl", {organism: str, type: type});
 	    d.addCallbacks(this.updateTaxonSelect);
 	}
     },
@@ -64,13 +65,73 @@ var Qtl = {
       	var type = 'associate';
 	var organism_id = MochiKit.DOM.getElement('taxon_select').value;	
 
-	new Ajax.Request('organism_browser.pl', { parameters:
+	new Ajax.Request('/phenome/organism_browser.pl', { parameters:
 		{type: type, organism_id: organism_id}, onSuccess: Tools.reloadPage} );
 
 
-},
+    },
 
-    
+
+    toggleStatOptions: function(id)
+    {
+        var e = document.getElementById('statTools');       
+        var all = e.getElementsByTagName('div');
+        
+        for ( var i=0;i<all.length;i++ )
+            {
+                all[i].style.display="none";
+                if ( all[i].id == id )
+                    {
+                        all[i].style.display="block";
+                    }
+            }
+    },
+   
+    setUserStatOption: function( id, useroption ) 
+    {
+        new MochiKit.Async.doSimpleXMLHttpRequest ('/qtl/stat/option', 
+                                                   { pop_id: id, 
+                                                     stat_params: useroption
+                                                   }
+                                                  );
+    },
+
+
+    logUser: function( userid ) 
+    {
+	if (userid == null) 
+            {
+                window.location="/solpeople/login.pl";
+            } 
+        else 
+            {
+                Qtl.toggleStatOptions('qtlParameters');
+            }
+    }, 
+
+    waitPage: function() 
+    {
+        jQuery.blockUI.defaults.applyPlatformOpacityRules = false;
+        jQuery.blockUI({message: jQuery('#waitmsg')});
+                       
+        if(location.reload()) 
+            {
+                jQuery.unblockUI();
+            }          
+    },
+
+     genericWaitPage: function() 
+    {
+        jQuery.blockUI.defaults.applyPlatformOpacityRules = false;
+        jQuery.blockUI({message: 'Please wait....'});
+                       
+        if(location.reload()) 
+            {
+                jQuery.unblockUI();
+            }          
+    },
+            
+      
 }//
 
 	

@@ -1,0 +1,45 @@
+<%args>
+  $principle
+  $relationship_name
+  $object_type_text
+  $list_component
+</%args>
+
+<%init>
+
+    # make a hash of relationship_type => {
+    #    upstream   => \@list_of_objects
+    #    downstream => \@list_of_objects
+    # }
+    my %rels;
+    push @{$rels{$_->[0]}{$_->[1]}}, $_->[2]
+        for (
+          ( map [ $m->scomp('/chado/cvterm_link.mas', cvterm =>  $_->type, inflect => ( $_->type->name =~ /_of$/ ? 'PL_N' : 'PL_V' ) ), 'downstream', $_->subject ], $principle->search_related("${relationship_name}_objects",undef, { prefetch => ['type','subject'] }) ),
+          ( map [ $m->scomp('/chado/cvterm_link.mas', cvterm => $_->type ), 'upstream',   $_->object  ], $principle->search_related("${relationship_name}_subjects",undef,{ prefetch => ['type','object'] }) ),
+        );
+
+    my $type = $principle->type ? $m->scomp('/chado/cvterm_link.mas', cvterm => $principle->type) : 'dataset';
+
+</%init>
+
+%  for my $reltype ( sort keys %rels ) {
+%    my $updown = $rels{$reltype};
+%       for my $direction ( 'upstream', 'downstream' ) {
+%         if( my $objects = $updown->{$direction} ) {
+
+
+% my ($is,$are) = $reltype =~ /\w+[ _]of/i ? (' is a',' are') : ('','');
+<&| /page/info_section.mas,
+   title => $direction eq 'upstream' ? qq|$object_type_text this $type$is $reltype| : qq|$object_type_text that$are $reltype this $type|,
+   is_subsection => 1,
+&>
+    <& $list_component,
+       %ARGS,
+       objects => $objects,
+     &>
+</&>
+
+
+%         }
+%       }
+%  }

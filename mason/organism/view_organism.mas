@@ -21,10 +21,22 @@ $phenotypes => ''
 $loci => ''
 $qtl_data => undef
 $user_id => undef
-$user_role => undef
+$privileged_user => undef
 $form => undef;
 $static_data => undef;
+@image_objects => ()
 </%args>
+
+<%perl>
+my $this_page = "/organism/$organism_id/view/";
+my $image_subtitle =
+!$privileged_user ?
+"<span class= \"ghosted\">[Add new image]</span> "
+: " <a href=\"/image/add?type_id=$organism_id&type=organism&action=new&refering_page=$this_page\">[ Add new image]</a>" ;
+</%perl>
+
+<& /util/import_javascript.mas, classes => ["jquery", "thickbox", "CXGN.Page.FormattingHelpers"] &>
+
 
 <& /page/page_title.mas, title=>"Details for $taxon <i>$organism_name</i>" &>
 
@@ -34,6 +46,9 @@ $static_data => undef;
 
 <& /organism/taxonomy.mas, taxonomy=>$taxonomy &>
 
+<&| /page/info_section.mas, title=>"Images" , subtitle=>$image_subtitle &>
+<& /image/print_images.mas, image_objects => \@image_objects &>
+</&>
 
 
 <& /organism/accessions.mas, accessions => $accessions &>
@@ -52,7 +67,7 @@ $static_data => undef;
 
 <&| /page/info_section.mas, title=>'Transcript Information', collapsible => 1 &>
 
-% my @links = map { qq|<a href="/content/library_info.pl?library=$_\">$_</a>| } @libraries;
+% my @links = map { qq|<a href="/content/library_info.pl?library=$_">$_</a>| } @libraries;
 
 <& /page/info_table.mas,
    data => [
@@ -88,5 +103,5 @@ Number of phenotyped lines (for all <% $common_name %> species combined): <% $ph
 </&>
 
 
-
+<& /page/comments.mas, object_type=>"organism", object_id=>$organism_id, referer=>$this_page &>
 

@@ -12,6 +12,7 @@ use namespace::autoclean;
 use YAML::Any qw/LoadFile/;
 
 use URI::FromHash 'uri';
+use List::Compare;
 
 use CXGN::Chado::Stock;
 use SGN::View::Stock qw/stock_link stock_organisms stock_types/;
@@ -51,7 +52,7 @@ sub search :Path('/stock/search') Args(0) {
     my $form = HTML::FormFu->new(LoadFile($c->path_to(qw{forms stock stock_search.yaml})));
 
     $c->stash(
-        template                   => '/stock/search.mas',
+        template                   => '/search/phenotypes/stock.mas',
         request                    => $c->req,
         form                       => $form,
         form_opts                  => { stock_types => stock_types($self->schema), organisms => stock_organisms($self->schema)} ,
@@ -103,11 +104,13 @@ Chained off of L</get_stock> below.
 sub view_stock : Chained('get_stock') PathPart('view') Args(0) {
     my ( $self, $c, $action) = @_;
 
-    $c->forward('get_stock_extended_info');
+    if( $c->stash->{stock_row} ) {
+        $c->forward('get_stock_extended_info');
+    }
 
     my $logged_user = $c->user;
     my $person_id = $logged_user->get_object->get_sp_person_id if $logged_user;
-    my $curator = $logged_user->check_roles('curator') if $logged_user;
+    my $curator   = $logged_user->check_roles('curator') if $logged_user;
     my $submitter = $logged_user->check_roles('submitter') if $logged_user;
     my $sequencer = $logged_user->check_roles('sequencer') if $logged_user;
 
@@ -122,10 +125,28 @@ sub view_stock : Chained('get_stock') PathPart('view') Args(0) {
 
     # print message if stock_id is not valid
     unless ( ( $stock_id =~ m /^\d+$/ ) || ($action eq 'new' && !$stock_id) ) {
-        $c->throw_404( "No stock/accession exists for identifier $stock_id" );
+        $c->throw_404( "No stock/accession exists for that identifier." );
     }
     unless ( $stock->get_object_row || !$stock_id && $action && $action eq 'new' ) {
-        $c->throw_404( "No stock/accession exists for identifier $stock_id" );
+        $c->throw_404( "No stock/accession exists for that identifier." );
+    }
+
+    my $props = $self->_stockprops($stock);
+    # print message if the stock is visible only to certain user roles
+    my @logged_user_roles = $logged_user->roles if $logged_user;
+    my @prop_roles = @{ $props->{visible_to_role} } if  ref($props->{visible_to_role} );
+    my $lc = List::Compare->new( {
+        lists    => [\@logged_user_roles, \@prop_roles],
+        unsorted => 1,
+                              } );
+    my @intersection = $lc->get_intersection;
+    if ( !$curator && @prop_roles  && !@intersection) { # if there is no match between user roles and stock visible_to_role props
+        $c->throw(is_client_error => 0,
+                  title             => 'Restricted page',
+                  message           => "Stock $stock_id is not visible to your user!",
+                  developer_message => 'only logged in users of certain roles can see this stock' . join(',' , @prop_roles),
+                  notify            => 0,   #< does not send an error email
+            );
     }
 
     # print message if the stock is obsolete
@@ -144,7 +165,6 @@ sub view_stock : Chained('get_stock') PathPart('view') Args(0) {
     }
 
     ####################
-    my $props = $self->_stockprops($stock);
     my $is_owner;
     my $owner_ids = $c->stash->{owner_ids} || [] ;
     if ( $stock && ($curator || $person_id && ( grep /^$person_id$/, @$owner_ids ) ) ) {
@@ -175,6 +195,7 @@ sub view_stock : Chained('get_stock') PathPart('view') Args(0) {
             pubs      => $pubs,
             members_phenotypes => $c->stash->{members_phenotypes},
             direct_phenotypes  => $c->stash->{direct_phenotypes},
+            direct_genotypes   => $c->stash->{direct_genotypes},
             has_qtl_data   => $c->stash->{has_qtl_data},
             cview_tmp_dir  => $cview_tmp_dir,
             cview_basepath => $c->get_conf('basepath'),
@@ -255,6 +276,9 @@ sub get_stock_extended_info : Private {
 
     my ($members_phenotypes, $has_members_genotypes)  = $stock ? $self->_stock_members_phenotypes( $c->stash->{stock_row} ) : undef;
     $c->stash->{members_phenotypes} = $members_phenotypes;
+
+    my $direct_genotypes  = $stock ? $self->_stock_project_genotypes( $c->stash->{stock_row} ) : undef;
+    $c->stash->{direct_genotypes} = $direct_genotypes;
 
     my $stock_type;
     $stock_type = $stock->get_object_row->type->name if $stock->get_object_row;
@@ -365,13 +389,24 @@ SELECT sp_person_id FROM sgn_people.sp_person
     if ( my $ontology = $c->req->param('onto') ) {
         my ($cv_name, $full_accession, $cvterm_name) = split(/--/ , $ontology);
         my ($db_name, $accession) = split(/:/, $full_accession);
-        my ($cvterm) = $self->schema->resultset("General::Db")->
-            search( { 'me.name' => $db_name })->
-            search_related('dbxrefs', { accession => $accession } )->
-            search_related('cvterm');
-        my $cvterm_id = $cvterm->cvterm_id;
-        my @children_ids = $cvterm->recursive_children->get_column('cvterm_id')->all;
-        push ( @children_ids, $cvterm_id ) ;
+        my $cvterm;
+        my (@cvterm_ids, @children_ids);
+        if ($db_name && $accession) {
+            ($cvterm) = $self->schema->resultset("General::Db")->
+                search( { 'me.name' => $db_name })->
+                search_related('dbxrefs', { accession => $accession } )->
+                search_related('cvterm');
+            @cvterm_ids = ( $cvterm->cvterm_id );
+            @children_ids = $cvterm->recursive_children->get_column('cvterm_id')->all;
+        } else {
+            my $cvterms = $self->schema->resultset("Cv::Cvterm")->
+                search( { lc('name') => { 'LIKE' => lc($ontology) } });
+            while ( my $term =  $cvterms->next ) {
+                push @cvterm_ids ,   $term->cvterm_id ;
+                push @children_ids , $term->recursive_children->get_column('cvterm_id')->all;
+            }
+        }
+        push ( @children_ids, @cvterm_ids ) ;
         $rs = $rs->search( {
             'stock_cvterms.cvterm_id' => { -in =>  \@children_ids },
             -or => [
@@ -460,7 +495,7 @@ sub _stock_project_phenotypes {
         my @ph = map $_->phenotype, $exp->nd_experiment_phenotypes;
         my $project_desc = $project_descriptions{ $exp->nd_experiment_id }
             or die "no project found for exp ".$exp->nd_experiment_id;
-        push @{ $phenotypes{ $project_desc }}, @ph;
+        push @{ $phenotypes{ $project_desc }}, @ph if scalar(@ph);
     }
     return \%phenotypes;
 }
@@ -485,6 +520,50 @@ SELECT COUNT( DISTINCT genotype_id )
     my $subject_phenotypes = $self->_stock_project_phenotypes( $subjects );
     return ( $subject_phenotypes, $has_members_genotypes );
 }
+
+###########
+# this sub gets all genotypes measured directly on this stock and
+# stores it in a hashref as { project_name => [ BCS::Genotype::Genotype, ... ]
+
+sub _stock_project_genotypes {
+    my ($self, $bcs_stock) = @_;
+    return {} unless $bcs_stock;
+
+    # hash of experiment_id => project(s) desc
+    my %project_descriptions =
+        map { $_->nd_experiment_id => join( ', ', map $_->project->description, $_->nd_experiment_projects ) }
+        $bcs_stock->search_related('nd_experiment_stocks')
+                  ->search_related('nd_experiment',
+                                   {},
+                                   { prefetch => { 'nd_experiment_projects' => 'project' } },
+                                   );
+    my $experiments = $bcs_stock->search_related('nd_experiment_stocks')
+                                ->search_related('nd_experiment',
+                                                 {},
+                                                 { prefetch => { nd_experiment_genotypes => 'genotype' } },
+                                                );
+    my %genotypes;
+    while (my $exp = $experiments->next) {
+        # there should be one project linked to the experiment ?
+        my @gen = map $_->genotype, $exp->nd_experiment_genotypes;
+        my $project_desc = $project_descriptions{ $exp->nd_experiment_id }
+	or die "no project found for exp ".$exp->nd_experiment_id;
+	#my @values;
+	#foreach my $genotype (@gen) {
+	    #my $genotype_id = $genotype->genotype_id;
+	    #my $vals = $self->schema->storage->dbh->selectcol_arrayref
+	    #	("SELECT value  FROM genotypeprop  WHERE genotype_id = ? ",
+	    #	 undef,
+	    #	 $genotype_id
+	    #	);
+	    #push @values, $vals->[0];
+	#}
+	push @{ $genotypes{ $project_desc }}, @gen if scalar(@gen);
+    }
+    return \%genotypes;
+}
+
+##############
 
 sub _stock_dbxrefs {
     my ($self,$stock) = @_;

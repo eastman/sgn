@@ -36,19 +36,19 @@ $mech->content_like(qr/A database of in-situ/);
 my $type_regex = {
     bacs                         => qr/Genomic clone search/,
     directory                    => qr/Directory search/,
-    est_library                  => qr/EST search/,
+    est                          => qr/EST search/,
+    est_library                  => qr/Library search/,
     experiment                   => qr/Expression search/,
     family                       => qr/Family search/,
     images                       => qr/Image search/,
-    library                      => qr/EST search/,
+    library                      => qr/Library search/,
     loci                         => qr/Gene search/,
     marker                       => qr/Map locations/,
     markers                      => qr/Marker options/,
     phenotype                    => qr/Submit new stock/,
     phenotype_qtl_trait          => qr/Submit new stock/,
-    phenotypes                   => qr/QTL Population/,
     platform                     => qr/Expression search/,
-    qtl                          => qr/QTL search/,
+    qtl                          => qr/Search QTLs/,
     template_experiment_platform => qr/Expression search/,
     trait                        => qr/Browse trait terms/,
     unigene                      => qr/Unigene search/,
@@ -57,19 +57,17 @@ my $type_regex = {
 
 $mech->get("/search/wombats");
 is($mech->status,404,'/search/wombats is a 404');
-$mech->content_like(qr/Invalid search type/);
 
 $mech->get("/search/direct_search.pl?search=wombats");
 is($mech->status,404,'/search/direct_search.pl?search=wombats is a 404');
-$mech->content_like(qr/Invalid search type/);
 
 for my $type (keys %$type_regex) {
     $mech->get_ok("/search/$type");
+    my $regex = $type_regex->{$type};
+    $mech->content_like($regex); # or diag $mech->content;
 
     # the glossary search was never accessible via direct_search
     $mech->get_ok("/search/direct_search.pl?search=$type") if ($type ne 'glossary');
-    my $regex = $type_regex->{$type};
-    $mech->content_like($regex); # or diag $mech->content;
 }
 
 done_testing;

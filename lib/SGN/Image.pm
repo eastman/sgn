@@ -1,8 +1,8 @@
+package SGN::Image;
 
 =head1 NAME
 
-SGN::Image.pm - a class to deal the SGN Context  configuration for
-uploading images on SGN.
+SGN::Image - SGN Images
 
 =head1 DESCRIPTION
 
@@ -26,15 +26,11 @@ image sizes: large, medium, small and thumbnail with the names:
 large.jpg, medium.jpg, small.jpg and thumbnail.jpg . All other
 metadata about the image is stored in the database.
 
-
 =head1 AUTHOR(S)
 
 Lukas Mueller (lam87@cornell.edu)
 Naama Menda (nm249@cornell.edu)
 
-=head1 VERSION
-
-0.01, Dec 15, 2009.
 
 =head1 MEMBER FUNCTIONS
 
@@ -42,20 +38,18 @@ The following functions are provided in this class:
 
 =cut
 
-use strict;
+use Modern::Perl;
 
-use File::Temp qw / tempfile tempdir /;
-use File::Copy qw / copy move /;
-use File::Basename qw / basename /;
+use File::Temp qw/ tempfile tempdir /;
+use File::Copy qw/ copy move /;
+use File::Basename qw/ basename /;
 use File::Spec;
 use CXGN::DB::Connection;
-use SGN::Context;
 use CXGN::Tag;
 
-package SGN::Image;
+use CatalystX::GlobalContext '$c';
 
-use base qw | CXGN::Image |;
-
+use base qw| CXGN::Image |;
 
 =head2 new
 
@@ -70,16 +64,16 @@ use base qw | CXGN::Image |;
 =cut
 
 sub new {
-    my $class = shift;
-    my $dbh   = shift;
-    my $image_id = shift;
+    my ( $class, $dbh, $image_id, $context ) = @_;
+    $context ||= $c;
 
-    my $c = SGN::Context->new();
+    my $self = $class->SUPER::new(
+        dbh       => $dbh || $context->dbc->dbh,
+        image_id  => $image_id,
+        image_dir => $context->get_conf('static_datasets_path')."/".$context->get_conf('image_dir'),
+      );
 
-    my $self = $class->SUPER::new(dbh=>$dbh, image_id=>$image_id, image_dir=>$c->get_conf('static_datasets_path')."/".$c->get_conf('image_dir') );
-
-    $self->set_configuration_object( $c );
-    $self->set_dbh($dbh);
+    $self->config( $context );
 
     return $self;
 }
@@ -101,9 +95,21 @@ sub get_image_url {
     my $self = shift;
     my $size = shift;
 
-    my $url = $self->get_configuration_object()->get_conf('static_datasets_url')."/".$self->get_configuration_object()->get_conf('image_dir')."/".$self->get_filename($size, 'partial')
+    if( $self->config->test_mode && ! -e $self->get_filename($size) ) {
+        # for performance, only try to stat the file if running in
+        # test mode. doing lots of file stats over NFS can actually be
+        # quite expensive.
+        return '/img/image_temporarily_unavailable.png';
+    }
 
-
+    my $url = join '/', (
+         '',
+         $self->config()->get_conf('static_datasets_url'),
+         $self->config()->get_conf('image_dir'),
+         $self->get_filename($size, 'partial'),
+     );
+    $url =~ s!//!/!g;
+    return $url;
 }
 
 =head2 process_image
@@ -111,8 +117,8 @@ sub get_image_url {
  Usage:        $image->process_image($filename, "stock", 234);
  Desc:         creates the image and associates it to the type and type_id
  Ret:
- Args:
- Side Effects:
+ Args:         filename, type (experiment, stock, fish, locus, organism) , type_id
+ Side Effects: Calls the relevant $image->associate_$type function
  Example:
 
 =cut
@@ -139,44 +145,33 @@ sub process_image {
         #print STDERR "Associating to locus $type_id\n";
         $self->associate_locus($type_id);
     }
-
+    elsif ( $type eq "organism" ) {
+        $self->associate_organism($type_id);
+    } 
+    elsif ( $type eq "test") { 
+	# silent operation... everything is fine, it's a test!
+    }
     else {
-        warn "type $type is like totally illegal! Not associating image with any object. Please check if your loading script links the image with an sgn object! \n";
+        warn "type $type is not recognized as one of the legal types. Not associating image with any object. Please check if your loading script links the image with an sgn object! \n";
     }
 
 }
 
-=head2 get_configuration_object
+=head2 config, context, _app
 
- Usage:
- Desc:
- Ret:
- Args:
- Side Effects:
- Example:
+Get the Catalyst context object we are running with.
 
 =cut
 
-sub get_configuration_object {
-    my $self = shift;
+sub config {
+    my ($self,$obj) = @_;
+
+    $self->{configuration_object} = $obj if $obj;
+
     return $self->{configuration_object};
 }
-
-=head2 set_configuration_object
-
- Usage:
- Desc:
- Ret:
- Args:
- Side Effects:
- Example:
-
-=cut
-
-sub set_configuration_object {
-    my $self = shift;
-    $self->{configuration_object} = shift;
-}
+*context = \&config;
+*_app    = \&config;
 
 =head2 get_img_src_tag
 
@@ -195,9 +190,9 @@ sub get_img_src_tag {
     my $size = shift;
     my $url  = $self->get_image_url($size);
     my $name = $self->get_name();
-    if ( $size eq "original" ) {
+    if ( $size && $size eq "original" ) {
 
-        my $static = $self->get_configuration_object()->get_conf("static_datasets_url");
+        my $static = $self->config()->get_conf("static_datasets_url");
 
         return
             "<a href=\""
@@ -206,7 +201,7 @@ sub get_img_src_tag {
           . $name
           . "\" /></a>";
     }
-    elsif ( $size eq "tiny" ) {
+    elsif ( $size && $size eq "tiny" ) {
         return
             "<img src=\""
           . ($url)
@@ -293,8 +288,8 @@ sub apache_upload_image {
     }
 
     my $temp_file =
-        $self->get_configuration_object()->get_conf("basepath") . "/"
-      . $self->get_configuration_object()->get_conf("tempfiles_subdir")
+        $self->config()->get_conf("basepath") . "/"
+      . $self->config()->get_conf("tempfiles_subdir")
       . "/temp_images/"
       . $ENV{REMOTE_ADDR} . "-"
       . $upload_filename;
@@ -339,10 +334,10 @@ sub associate_stock  {
     my $self = shift;
     my $stock_id = shift;
     if ($stock_id) {
-        my $user = $self->get_configuration_object->user_exists;
+        my $user = $self->config->user_exists;
         if ($user) {
-            my $metadata_schema = $self->get_configuration_object->dbic_schema('CXGN::Metadata::Schema', search_path=>'metadata');
-            my $metadata = CXGN::Metadata::Metadbdata->new($metadata_schema, $self->get_configuration_object->user->get_object->get_username);
+            my $metadata_schema = $self->config->dbic_schema('CXGN::Metadata::Schema');
+            my $metadata = CXGN::Metadata::Metadbdata->new($metadata_schema, $self->config->user->get_object->get_username);
             my $metadata_id = $metadata->store()->get_metadata_id();
 
             my $q = "INSERT INTO phenome.stock_image (stock_id, image_id, metadata_id) VALUES (?,?,?) RETURNING stock_image_id";
@@ -366,7 +361,7 @@ sub associate_stock  {
 
 sub get_stocks {
     my $self = shift;
-    my $schema = $self->get_configuration_object->dbic_schema('Bio::Chado::Schema' , 'sgn_chado');
+    my $schema = $self->config->dbic_schema('Bio::Chado::Schema' , 'sgn_chado');
     my @stocks;
     my $q = "SELECT stock_id FROM phenome.stock_image WHERE image_id = ? ";
     my $sth = $self->get_dbh->prepare($q);
@@ -528,7 +523,7 @@ sub get_fish_result_clone_ids {
     return @fish_result_clone_ids;
 }
 
-=head2 function get_associated_objects
+=head2 get_associated_objects
 
   Synopsis:
   Arguments:
@@ -563,12 +558,11 @@ sub get_associated_objects {
     foreach my $locus ($self->get_loci() ) {
         push @associations, ["locus", $locus->get_locus_id(), $locus->get_locus_name];
     }
+    foreach my $o ($self->get_organisms ) {
+        push @associations, ["organism", $o->organism_id, $o->species];
+    }
     return @associations;
 }
-
-
-
-### deanx additions - Nov 13, 2007
 
 =head2 associate_locus
 
@@ -628,9 +622,63 @@ sub get_loci {
 }
 
 
+=head2 associate_organism
+
+ Usage:        $image->associate_organism($organism_id)
+ Desc:
+ Ret:
+ Args:
+ Side Effects:
+ Example:
+
+=cut
+
+sub associate_organism {
+    my $self = shift;
+    my $organism_id = shift;
+    my $sp_person_id= $self->get_sp_person_id();
+    my $query = "INSERT INTO metadata.md_image_organism
+                   (image_id,
+                   sp_person_id,
+                   organism_id)
+                 VALUES (?, ?, ?) RETURNING md_image_organism_id";
+    my $sth = $self->get_dbh()->prepare($query);
+    $sth->execute(
+        $self->get_image_id,
+        $sp_person_id,
+        $organism_id,
+        );
+    my ($image_organism_id) = $sth->fetchrow_array;
+    return $image_organism_id;
+}
+
+=head2 get_organisms
+
+ Usage:   $self->get_organisms
+ Desc:    find the organism objects asociated with this image
+ Ret:     a list of BCS Organism objects
+ Args:    none
+ Side Effects: none
+ Example:
+
+=cut
+
+sub get_organisms {
+    my $self = shift;
+    my $schema = $self->config->dbic_schema('Bio::Chado::Schema' , 'sgn_chado');
+    my $query = "SELECT organism_id FROM metadata.md_image_organism WHERE md_image_organism.obsolete != 't' and md_image_organism.image_id=?";
+    my $sth = $self->get_dbh()->prepare($query);
+    $sth->execute($self->get_image_id());
+    my @organisms = ();
+    while (my ($o_id) = $sth->fetchrow_array ) {
+        push @organisms, $schema->resultset("Organism::Organism")->find(
+            { organism_id => $o_id } );
+    }
+    return @organisms;
+}
 
 
-=head2 function get_associated_object_links
+=head2 get_associated_object_links
 
   Synopsis:
   Arguments:
@@ -655,17 +703,15 @@ sub get_associated_object_links {
 
         if ($assoc->[0] eq "fished_clone") {
             $s .= qq { <a href="/maps/physical/clone_info.pl?id=$assoc->[1]">FISHed clone id:$assoc->[1]</a> };
-
         }
-      if ($assoc->[0] eq "locus" ) {
-          $s .= qq { <a href="/phenome/locus_display.pl?locus_id=$assoc->[1]">Locus name:$assoc->[2]</a> };
-      }
-
+        if ($assoc->[0] eq "locus" ) {
+            $s .= qq { <a href="/phenome/locus_display.pl?locus_id=$assoc->[1]">Locus name:$assoc->[2]</a> };
+        }
+        if ($assoc->[0] eq "organism" ) {
+            $s .= qq { <a href="/organism/$assoc->[1]/view/">Organism name:$assoc->[2]</a> };
+        }
     }
     return $s;
 }
-
-
-
 
 1;

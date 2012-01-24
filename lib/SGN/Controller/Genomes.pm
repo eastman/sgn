@@ -1,4 +1,11 @@
 package SGN::Controller::Genomes;
+
+=head1 NAME
+
+SGN::Controller::Genomes - controller for genome portal pages
+
+=cut
+
 use Moose;
 use namespace::autoclean;
 
@@ -8,11 +15,47 @@ BEGIN{ extends 'Catalyst::Controller' }
 
 with 'Catalyst::Component::ApplicationAttribute';
 
+=head1 PUBLIC ACTIONS
+
+=head1 list_genomes
+
+Public path: /genomes
+
+=cut
+
+sub list_genomes : Path( '/genomes' ) Args(0) {
+    my ( $self, $c ) = @_;
+
+    my $schema = $c->dbic_schema( 'Bio::Chado::Schema', 'sgn_chado' );
+
+    $c->stash(
+
+        genome_organisms => [
+            $schema->resultset('Organism::Organismprop')
+              ->search({ 'type.name' => 'genome_page' }, { join => 'type' })
+              ->search_related('organism')
+              ->all
+        ],
+
+        template         => '/genomes/index.mas',
+    );
+}
+
+=head2 view_genome_data
+
+Public path: /organism/<organism id or name>/genome
+
+Queries for Biosource bs_sample records of type 'sequence_collection'
+or 'genome_annotation_set', and displays them with file download
+links.
+
+=cut
+
 sub view_genome_data : Chained('/organism/find_organism') PathPart('genome') {
     my ( $self, $c ) = @_;
 
     my $organism = $c->stash->{organism};
-    $c->throw_404 unless $organism->search_related('organismprops',
+    $c->throw_404 unless $organism && $organism->search_related('organismprops',
                              { 'type.name' => 'genome_page', 'me.value' => 1 },
                              { join => 'type' },
                          )->count;
@@ -20,30 +63,63 @@ sub view_genome_data : Chained('/organism/find_organism') PathPart('genome') {
     (my $template_name = '/genomes/'.$organism->species.'.mas') =~ s/ /_/g;
 
     # find assemblies for this organism
-    $c->stash->{assembly_list} = [
+    $c->stash->{assembly_list} = my $assembly_list = [
         map {
-            my $bs_sample = $_;
-            [
-                $bs_sample->sample_name,
-                $bs_sample->metadata ? $bs_sample->metadata->create_date : undef,
-                $bs_sample->description,
-                [ $self->assembly_annotations( $bs_sample ) ],
-                [ map +{ text    => $_->basename,
-                         url     => '/metadata/file/'.$_->file_id.'/download',
-                         tooltip => $_->comment,
-                       },
-                  $self->assembly_files( $bs_sample )
-                ],
-            ],
+            my $s = $_;
+            my $h = $self->_bs_sample_to_display_hashref( $c, $s );
+            # also add the associated annotation_sets to it
+            $h->{annotation_sets} =  [ $self->assembly_annotations( $s ) ];
+            $h
         } $self->assemblies_for_organism( $organism )->all
       ];
 
+    # find annotation sets for this organism
+    $c->stash->{annotation_list} = [
+        map {
+            $self->_bs_sample_to_display_hashref( $c, $_ );
+        }
+        # annotation sets are the ones that were found related to the
+        # assemblies, plus ones queried from the db by organism, made
+        # unique, and sorted
+        sort { $a->metadata && $a->metadata->create_date->epoch <=> $b->metadata && $b->metadata->create_date->epoch
+               || $a->sample_name cmp $b->sample_name
+             }
+        $self->uniq_bs_samples(
+            ( map { @{ $_->{annotation_sets} || [] } } @$assembly_list ),
+            $self->annotation_sets_for_organism( $organism )->all
+        )
+      ];
+
+    # choose which template we will use
     $c->stash->{template} =
         $c->view('Mason')->component_exists( $template_name )
             ? $template_name : '/genomes/default.mas';
 }
 
 ####### helper methods ##########
+
+sub uniq_bs_samples {
+    my $self = shift;
+    my %seen;
+    return grep !$seen{$_->sample_id}++, @_
+}
+
+sub _bs_sample_to_display_hashref {
+    my ( $self, $c, $bs_sample ) = @_;
+
+    return {
+        name => $c->view('BareMason')->render( $c, '/biosource/sample_link.mas', { sample => $bs_sample } ),
+        date => $bs_sample->metadata ? $bs_sample->metadata->create_date : undef,
+        description => $bs_sample->description,
+        files => [
+            map +{ text        => $_->basename,
+                   url         => '/metadata/file/'.$_->file_id.'/download',
+                   description => $_->comment,
+                 },
+            $self->assembly_files( $bs_sample )
+         ],
+    };
+}
 
 sub _annotates_cvterms_rs {
     my ( $self, $row ) = @_;
@@ -91,6 +167,17 @@ sub assemblies_for_organism {
              });
 }
 
+sub annotation_sets_for_organism {
+    my ( $self, $organism ) = @_;
+    my $schema = $organism->result_source->schema;
+
+    $schema->resultset('BsSample')
+           ->search({
+               type_id     => { -in => [ uniq map $_->cvterm_id, @{$self->_annotation_cvterms( $schema )}] },
+               organism_id => $organism->organism_id,
+             });
+}
+
 # get the RS of types (i.e. cvterms) that would indicate that we
 # should list a certain biosource
 # currently defined as 'all SO children '
@@ -103,6 +190,15 @@ sub _assembly_cvterms {
              });
 
     my @terms = $sc->all;
+    return [ @terms, map $_->recursive_children, @terms ];
+}
+
+sub _annotation_cvterms {
+    my ( $self, $schema ) = @_;
+    my $t = $schema->resultset('Cv::Cvterm')
+           ->search({ 'name' => 'genome_annotation_set' });
+
+    my @terms = $t->all;
     return [ @terms, map $_->recursive_children, @terms ];
 }
 

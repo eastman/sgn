@@ -26,6 +26,7 @@ a hashref with all the parameters needed for printing the stock page!
  locus_autocomplete_uri => '/ajax/locus/autocomplete/'
  cvterm_add_uri
  cvterm_autocomplete_uri => '/ajax/cvterm/autocomplete/'
+ organism_autocomplete_uri => '/ajax/organism/autocomplete/'
 
 =back
 
@@ -44,6 +45,9 @@ $locus_add_uri => ''
 $locus_autocomplete_uri => undef
 $cvterm_add_uri => ''
 $cvterm_autocomplete_uri => undef
+$organism_autocomplete_uri => '/ajax/organism/autocomplete/'
+
+
 </%args>
 
 
@@ -56,7 +60,6 @@ use CXGN::People::Person;
 use CXGN::Chado::Publication;
 use CXGN::Cview::Map::SGN::Genotype;
 use CXGN::Cview::MapOverviews;
-
 
 my $stock = $stockref->{stock};
 my $stock_id = $stockref->{stock_id};
@@ -113,7 +116,7 @@ my $direct_phenotypes = $stockref->{direct_phenotypes};
 # get all phenotypes of subjects
 my $members_phenotypes = $stockref->{members_phenotypes};
 
-
+my $direct_genotypes = $stockref->{direct_genotypes};
 ############################
 my $map_html = $stockref->{map_html};
 my $map;
@@ -149,18 +152,29 @@ foreach my $db_name ( keys %$dbxrefs ) {
     $source_dbs{$url} = $db_name . ": " . $dbxref->accession if $url;
   }
 }
-my $new_ontology_link = !$person_id ? qq|<a href="/solpeople/login.pl">[log-in to associate new ontology term]</a> | : '' ;
+
+my $ontology_subtitle = $curator || $submitter || $sequencer  ?
+  qq|<a href="javascript:Tools.toggleContent('associate_cvterm_form', 'stock_ontology')">[Add ontology annotations]</a> | :
+  qq |<span class = "ghosted"> [Add ontology annotations]</span> |;
+
 
 </%perl>
+<& /util/import_javascript.mas, classes => ["jquery", "thickbox", "CXGN.Phenome.Tools", "CXGN.Page.FormattingHelpers"] &>
 
 
-<& /util/import_javascript.mas, classes => ["jquery", "thickbox", "CXGN.Page.FormattingHelpers"] &>
-
-
+<script language="javascript">
+function jqueryStuff() { 
+   jQuery(function() {
+     jQuery("#species_name").autocomplete({
+        source: '/organism/autocomplete'
+     });
+  });
+}
+</script>
 <& /page/page_title.mas, title=> join( ': ', grep $_, ucfirst($type_name), $uniquename ) || 'Create a new stock' &>
 
 
-<&| /page/info_section.mas, title=>"Stock details" , subtitle => "<a href=../../phenome/qtl_form.pl>New QTL population</a> | <a href=/stock/search/>Back to stock search</a>"  &>
+<&| /page/info_section.mas, title=>"Stock details" , subtitle => "<a href=/phenome/qtl_form.pl>New QTL population</a> | <a href=/stock/search/>Back to stock search</a>"  &>
 
   <& /page/form.mas,
   object_type=>'stock',
@@ -242,11 +256,20 @@ my $new_ontology_link = !$person_id ? qq|<a href="/solpeople/login.pl">[log-in t
 
 </&>
 
-
-
-<&| /page/info_section.mas, title=>"Ontology annotation" , collapsible=>1, collapsed=>1, subtitle=>$new_ontology_link &>
-<& /ontology/associate_ontology.mas, object_id => $stock_id , object_name => "stock", cvterm_add_uri=> $cvterm_add_uri, ontology_url=>"/stock/$stock_id/ontologies/", show_form => $is_owner  &>
-
+<&| /page/info_section.mas,
+  id   => 'stock_ontology',
+  title=>"Ontology annotation",
+  collapsible=>1,
+  collapsed=>1,
+  subtitle=>$ontology_subtitle &>
+  <& /ontology/associate_ontology.mas,
+  object_id     => $stock_id ,
+  object_name   => "stock",
+  cvterm_add_uri=> $cvterm_add_uri,
+  ontology_url  => "/stock/$stock_id/ontologies/",
+  reference_uri => "/stock/$stock_id/references/",
+  evidence_with_uri => "/stock/$stock_id/evidences/",
+  show_form     => $is_owner  &>
 </&>
 
 <&| /page/info_section.mas, title=>"Phenotype data " ,  collapsible => 1, collapsed => 1 &>
@@ -275,6 +298,15 @@ my $new_ontology_link = !$person_id ? qq|<a href="/solpeople/login.pl">[log-in t
 
 <&| /page/info_section.mas, title=>"Genotype data ", collapsible => 1 , collapsed => 1 &>
 % print $map_html;
+% foreach my $project (keys %$direct_genotypes) {
+%  my $genotypes = $direct_genotypes->{$project} ;
+<&| /page/info_section.mas, title=>"Experiment: $project", is_subsection => 1, collapsible => 1 &>
+% foreach my $genotype (@$genotypes) {
+%  print $genotype->description . "\n";
+% }       
+  </&>
+% }
+
 </&>
 
 <& /page/comments.mas, object_type=>'stock', object_id=>$stock_id, referer=>$this_page &>

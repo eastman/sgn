@@ -16,7 +16,6 @@ library(RColorBrewer)
 library(ltm)
                                         
 allargs<-commandArgs()
-print(allargs)
 
 phenodata<-grep("phenodata",
                allargs,
@@ -39,11 +38,6 @@ heatmap<-grep("heatmap",
                value=TRUE
                )
 
-print(phenodata)
-print(cortable)
-print(heatmap)
-
-
 #reading phenotype data into an R object
 phenodata<-read.csv(phenodata,
                     header=TRUE,
@@ -53,8 +47,6 @@ phenodata<-read.csv(phenodata,
                    )
 
 phenodata$ID=NULL
-
-
 
 #running Pearson correlation analysis
 coefpvalues<-rcor.test(phenodata,
@@ -75,8 +67,6 @@ pvalues<-round(pvalues,
                digits=2
                )
 
-pvalues[upper.tri(pvalues)]<-NA
-
 
 #rounding correlation coeficients into 2 decimal places
 coefficients<-round(coefficients,
@@ -88,19 +78,31 @@ allcordata<-round(allcordata,
                   )
 
 #remove rows and columns that are all "NA"
-coefficients<-coefficients[-which(apply(coefficients,
-                                   1,
-                                   function(x)all(is.na(x)))
-                             ),
-                           -which(apply(coefficients,
-                                   2,
-                                   function(x)all(is.na(x)))
-                             )
-                          ]
+if ( apply(coefficients,
+           1,
+           function(x)any(is.na(x))
+           )
+    ||
+    apply(coefficients,
+          2,
+          function(x)any(is.na(x))
+          )
+    )
+  {
+                                                            
+    coefficients<-coefficients[-which(apply(coefficients,
+                                            1,
+                                            function(x)all(is.na(x)))
+                                      ),
+                               -which(apply(coefficients,
+                                            2,
+                                            function(x)all(is.na(x)))
+                                      )
+                               ]
+  }
 
-
+pvalues[upper.tri(pvalues)]<-NA
 coefficients[upper.tri(coefficients)]<-NA
-
 
 png(file=heatmap,
     height=600,
@@ -127,15 +129,15 @@ heatmap.2(coefficients,
           cexCol = 1.25,
           margins = c(10, 6)
           )
-
+ 
 dev.off()
 
-write.table(allcordata,
+write.table(coefficients,
       file=cortable,
       col.names=TRUE,
       row.names=TRUE,
+      quote=FALSE,
       dec="."
       )
-
 
 q(save = "no", runLast = FALSE)
